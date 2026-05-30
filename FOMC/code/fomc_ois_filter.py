@@ -1,14 +1,15 @@
 """
 FOMC Rate-Path Surprise Filter — Two-Track Framework
 ======================================================
-SEP days (Mar/Jun/Sep/Dec):  z = (DGS2_fomc - DGS2_prev)*100 / roll_std_DGS2
-    DGS2 captures both the rate decision AND dot-plot forward guidance.
+SEP days (Mar/Jun/Sep/Dec):  z = (SEP_median - DGS2_prev)*100 / max(roll_std_DGS2, 8 bps)
+    SEP_median  = dot-plot year-end FFR median, released with the statement at 14:00
+    DGS2_prev   = 2Y Treasury yield at prior-day close (FRED, published ~17:00 day before)
+    Both inputs are available at 14:01 when the trade fires. DGS2_fomc (end-of-day on
+    meeting date, published 17:00) is recorded for reference but NOT used in the filter.
+    Floor of 8 bps on rolling vol prevents ZLB-era (2021) z-score inflation.
 
-Non-SEP days: z = (actual_move_bps - implied_move_bps) / roll_std_DGS1MO
-    implied_move_bps = (DGS1MO_prev - EFFR_prev) * 100
-    actual_move_bps  = rate decision from statement (available at 14:01)
-
-Both tracks use the same |z| <= 1.0 threshold to decide whether to trade.
+Non-SEP days: always trade (no filter).
+    The rate decision alone is the only new information; it is almost always fully priced.
 """
 import matplotlib
 matplotlib.use('Agg')
@@ -21,12 +22,13 @@ import urllib.request
 from pathlib import Path
 from scipy import stats
 
-Path('figures').mkdir(exist_ok=True)
+Path('FOMC/figures').mkdir(exist_ok=True)
 DATA_DIR = Path('data/raw')
 ET       = 'America/New_York'
 BOOK_COLS    = ['bid_px_00','ask_px_00','bid_sz_00','ask_sz_00']
-HOLD_MINS    = 15
-NOTIONAL     = 100_000
+HOLD_MINS      = 15
+NOTIONAL       = 100_000
+SEP_FLOOR_STD  = 8.0   # bps — floor on rolling DGS2 vol; prevents ZLB inflation
 
 # ── FOMC / Control date lists ─────────────────────────────────────────────────
 FOMC_2021 = ['2021-01-27','2021-03-17','2021-04-28','2021-06-16',
@@ -201,25 +203,30 @@ for fomc_str in ALL_FOMC:
 
     # ── Surprise measure ─────────────────────────────────────────────────────
     if fomc_str in SEP_DATES:
-        # SEP track: DGS2 change captures rate decision + dot-plot path surprise
+        # SEP track: guidance gap = SEP_median - DGS2_prev (both available at 14:01)
+        # DGS2_fomc is end-of-day (published ~17:00 on meeting date) — recorded for
+        # reference only; not used in filter to preserve real-time discipline.
         if dgs2 is not None:
             prev_idx  = dgs2.index[dgs2.index < fomc_ts]
-            fomc_rate = dgs2.get(fomc_ts, np.nan)
-            if len(prev_idx) > 0 and not np.isnan(fomc_rate):
-                prev_rate        = dgs2[prev_idx[-1]]
-                raw_bps          = (fomc_rate - prev_rate) * 100
-                vol              = roll_std_dgs2.get(fomc_ts, np.nan)
-                z_score          = raw_bps / vol if (not np.isnan(vol) and vol > 0) else np.nan
-                rec['dgs2_prev']     = round(prev_rate, 3)
-                rec['dgs2_fomc']     = round(fomc_rate, 3)
-                rec['surprise_bps']  = round(raw_bps, 1)
-                rec['roll_std_bps']  = round(vol, 2) if not np.isnan(vol) else np.nan
-                rec['z_score']       = round(z_score, 2) if not np.isnan(z_score) else np.nan
+            fomc_rate = dgs2.get(fomc_ts, np.nan)   # informational only
+            if len(prev_idx) > 0:
+                prev_rate  = dgs2[prev_idx[-1]]
+                sep_median = SEP_DATA[fomc_str]
+                raw_bps    = (sep_median - prev_rate) * 100   # guidance gap, bps
+                vol_raw    = roll_std_dgs2.get(prev_idx[-1], np.nan)  # prev-day vol
+                vol        = max(vol_raw, SEP_FLOOR_STD) if not np.isnan(vol_raw) else SEP_FLOOR_STD
+                z_score    = raw_bps / vol
+                rec['dgs2_prev']    = round(prev_rate, 3)
+                rec['dgs2_fomc']    = round(fomc_rate, 3) if not np.isnan(fomc_rate) else np.nan
+                rec['sep_median']   = round(sep_median, 3)
+                rec['surprise_bps'] = round(raw_bps, 1)
+                rec['roll_std_bps'] = round(vol, 2)
+                rec['z_score']      = round(z_score, 2)
             else:
-                for k in ['dgs2_prev','dgs2_fomc','surprise_bps','roll_std_bps','z_score']:
+                for k in ['dgs2_prev','dgs2_fomc','sep_median','surprise_bps','roll_std_bps','z_score']:
                     rec[k] = np.nan
         else:
-            for k in ['dgs2_prev','dgs2_fomc','surprise_bps','roll_std_bps','z_score']:
+            for k in ['dgs2_prev','dgs2_fomc','sep_median','surprise_bps','roll_std_bps','z_score']:
                 rec[k] = np.nan
     else:
         # Non-SEP track: target surprise = actual_move - implied_move
@@ -275,17 +282,17 @@ df['date'] = pd.to_datetime(df['date'])
 
 # Ensure all expected columns exist
 for c in ['net_pnl','gross_pnl','tc','ret_14','surprise_bps','dgs2_prev','dgs2_fomc',
-          'dgs1mo_prev','effr_prev','implied_move_bps','actual_move_bps',
+          'sep_median','dgs1mo_prev','effr_prev','implied_move_bps','actual_move_bps',
           'roll_std_bps','z_score']:
     if c not in df.columns:
         df[c] = np.nan
 
 
 # ── 3. Classify events ────────────────────────────────────────────────────────
-Z_SMALL  = 1.0
-Z_LARGE  = 1.5
-THRESH_SMALL  = 5.0
-THRESH_MEDIUM = 12.0
+Z_SMALL        = 1.0
+Z_LARGE        = 1.5
+THRESH_SMALL   = 5.0
+THRESH_MEDIUM  = 12.0
 
 def classify(row):
     z = row.get('z_score', np.nan)
@@ -404,7 +411,7 @@ for i, (_, r) in enumerate(df.iterrows()):
 ax.set_xticks(list(x))
 ax.set_xticklabels([d[:7] for d in df['date'].dt.strftime('%Y-%m-%d')], rotation=90, fontsize=5.5)
 ax.set_ylabel('Surprise measure (bps)')
-ax.set_title('FOMC Surprise per Event — Two-Track\n(SEP: ΔDGS2 | Non-SEP: actual−implied; ▲ = non-SEP)')
+ax.set_title('FOMC Surprise per Event — Two-Track\n(SEP: SEP_median−DGS2_prev | Non-SEP: always trade; ○ = SEP)')
 patches = [
     mpatches.Patch(color='#2196F3', label=f'Small (|z|≤{Z_SMALL}) → trade'),
     mpatches.Patch(color='#FF9800', label=f'Medium ({Z_SMALL}<|z|<{Z_LARGE}) → skip'),
@@ -438,7 +445,7 @@ if mask.sum() > 5:
                      xy=(d18_row['surprise_bps'].values[0], d18_row['net_pnl'].values[0]),
                      xytext=(8, 30), textcoords='offset points', fontsize=7,
                      arrowprops=dict(arrowstyle='->', lw=0.8))
-    ax2.set_xlabel('Surprise (bps) — ΔDGS2 for SEP, actual−implied for non-SEP')
+    ax2.set_xlabel('Surprise (bps) — guidance gap (SEP_median−DGS2_prev) for SEP; N/A for non-SEP')
     ax2.set_ylabel('Strategy net PnL ($)')
     ax2.set_title('Surprise vs Strategy PnL\n(○ SEP events, ▲ Non-SEP events)')
     ax2.legend(fontsize=8)
@@ -448,16 +455,16 @@ else:
     ax2.set_title('Surprise vs PnL')
 
 plt.tight_layout()
-plt.savefig('figures/fomc_ois_surprise.png', dpi=150, bbox_inches='tight')
+plt.savefig('FOMC/figures/fomc_ois_surprise.png', dpi=150, bbox_inches='tight')
 plt.close()
-print('\nFigure saved: figures/fomc_ois_surprise.png')
+print('\nFigure saved: FOMC/figures/fomc_ois_surprise.png')
 
 # ── Save CSV ──────────────────────────────────────────────────────────────────
 col_order = ['date','year','regime','surprise_type',
-             'dgs2_prev','dgs2_fomc',
+             'dgs2_prev','sep_median','dgs2_fomc',
              'dgs1mo_prev','effr_prev','implied_move_bps','actual_move_bps',
              'surprise_bps','roll_std_bps','z_score','signal_class',
              'ret_14','gross_pnl','tc','net_pnl']
 out_cols = [c for c in col_order if c in df.columns]
-df[out_cols].to_csv('fomc_surprise_table.csv', index=False)
-print('Table saved: fomc_surprise_table.csv')
+df[out_cols].to_csv('FOMC/fomc_surprise_table.csv', index=False)
+print('Table saved: FOMC/fomc_surprise_table.csv')

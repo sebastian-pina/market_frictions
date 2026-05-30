@@ -40,21 +40,8 @@ The analysis spans 40 FOMC events from January 2021 through December 2025 (all 8
 **TC model:** Round-trip slippage = entry spread half-width + exit spread half-width. Pre-announcement spreads are 10–30\% above the daily baseline — average TC per trade is \$9.30.
 
 **Two-track filter:**
-- *SEP days* (quarterly, dot-plot released): trade only when $|z_t| = |\Delta\text{DGS2} / \sigma_{30d}| \leq 1.0$. Large DGS2 moves signal genuine forward-guidance surprises that overwhelm the mechanical reversion.
+- *SEP days* (quarterly, dot-plot released): trade only when $|z_t| = |(\text{SEP}_\text{median} - \text{DGS2}_{t-1}) / \sigma_{30d}(\Delta\text{DGS2})| \leq 1.0$. A large guidance gap signals that the dot-plot delivers a path surprise that overwhelms the mechanical reversion.
 - *Non-SEP days* (inter-meeting, rate decision only): trade unconditionally. Without a dot-plot, only the rate decision is new information — a quantity that is almost always well-priced before 2:00 PM. The mechanical overshoot reliably dominates.
-
-## SEP vs. OIS Guidance Surprise Analysis
-
-A new analysis compares the Fed's dot-plot median projections for year-end fed funds rate against the DGS2 market pricing on the day before each quarterly SEP meeting (March, June, September, December). The "guidance surprise" is defined as:
-
-$$\text{Guidance Surprise} = \text{SEP}_\text{median, year-end} - \text{DGS2}_\text{prev-day}$$
-
-Key findings from this comparison:
-- **2022:** Serial hawkish surprises (+0.4 to +0.9 pp). The Fed kept projecting higher rates than DGS2 implied, explaining why the initial market-down moves at 14:00 were correct repricing — not mechanical overshoots.
-- **2023–2024:** Guidance surprises moderated to ±0.3 pp. The December 2024 anomaly (guidance surprise -0.375 pp) was overridden by hawkish press conference language — the DGS2 z-score correctly flagged this as a large surprise (+1.84) and the filter would have excluded it.
-- **2025:** Near-zero guidance surprises (SEP and DGS2 converged to 3.875\%). Exactly the regime where the strategy performs best (+\$977).
-
-The SEP vs. OIS comparison confirms that the strategy's failure mode is not random: it is concentrated in meetings where the Fed is revealing genuinely new information about the rate path, overriding the mechanical reversion.
 
 ## Key Results
 
@@ -83,16 +70,16 @@ The SEP vs. OIS comparison confirms that the strategy's failure mode is not rand
 | Filter | N | Total PnL | Sharpe | p-value | Hit Rate |
 |--------|---|-----------|--------|---------|----------|
 | No filter (all 40) | 40 | +\$1,567 | 0.73 | 0.467 | 57\% |
-| **Two-track: SEP $|z| \leq 1.0$ + all non-SEP** | **29** | **+\$3,614** | **2.51** | **0.018** | **69\%** |
-| Excluded: SEP $|z| > 1.0$ (11 events) | 11 | $-\$2,046$ | $-1.51$ | 0.162 | 27\% |
+| **Two-track: SEP $|z| \leq 1.0$ + all non-SEP** | **28** | **+\$2,749** | **1.86** | **0.073** | **68\%** |
+| Excluded: SEP $|z| > 1.0$ (12 events) | 12 | $-\$1,182$ | $-0.80$ | 0.443 | 33\% |
 
 By track:
 
 | Track | N | Total PnL | Sharpe | p-value | Hit Rate |
 |-------|---|-----------|--------|---------|----------|
 | Non-SEP (always traded) | 22 | +\$3,226 | 3.95 | 0.001 | 77\% |
-| SEP $|z| \leq 1.0$ (traded) | 7 | +\$388 | 0.31 | 0.765 | 43\% |
-| SEP $|z| > 1.0$ (excluded) | 11 | $-\$2,046$ | $-1.51$ | 0.162 | 27\% |
+| SEP $|z| \leq 1.0$ (traded) | 6 | $-\$477$ | $-0.39$ | 0.710 | 33\% |
+| SEP $|z| > 1.0$ (excluded) | 12 | $-\$1,182$ | $-0.80$ | 0.443 | 33\% |
 
 ## The Friction Mechanism
 
@@ -114,6 +101,6 @@ The FOMC strategy generates +\$729 to +\$629 in annual alpha over the control in
 
 ## Conclusion
 
-The FOMC contrarian strategy is viable in hold/cut monetary policy regimes (Sharpe 2.08, p = 0.046, ex-2022 ex-Dec-18) and fails exclusively in the hiking cycle. The two-track filter operationalizes the key distinction: non-SEP meetings lack forward-guidance content and the mechanical overshoot dominates unconditionally (22 events, Sharpe 3.95, p = 0.001, 77\% hit rate); SEP meetings require the DGS2 z-score screen because the dot-plot can deliver a path surprise that overwhelms the reversion (7 small-z SEP events: +\$388; 11 medium/large-z SEP events: $-\$2,046$). Combined, the two-track strategy trades 29 of 40 events and generates +\$3,614 total at Sharpe 2.51 (p = 0.018, 69\% hit rate) — statistically significant at the 5\% level.
+The FOMC contrarian strategy is viable in hold/cut monetary policy regimes (Sharpe 2.08, p = 0.046, ex-2022 ex-Dec-18) and fails exclusively in the hiking cycle. The two-track filter operationalizes the key distinction: non-SEP meetings lack forward-guidance content and the mechanical overshoot dominates unconditionally (22 events, Sharpe 3.95, p = 0.001, 77\% hit rate) — the cleanest and most robust result in the study. SEP meetings require the guidance-gap z-score screen ($z = (\text{SEP}_\text{median} - \text{DGS2}_{t-1})/\sigma_{30d}$) because the dot-plot can deliver a path surprise that overwhelms the reversion (6 small-z SEP events: $-\$477$; 12 medium/large-z excluded: $-\$1,182$). Combined, the two-track strategy trades 28 of 40 events and generates +\$2,749 at Sharpe 1.86 (p = 0.073, 68\% hit rate).
 
-**For a practitioner:** implement the two-track filter — trade all non-SEP meetings and apply the DGS2 $|z| \leq 1.0$ screen only on SEP days. In a hold/cut environment, expect approximately 6–7 traded events per year (all 4–5 non-SEP meetings plus 1–2 small-z SEP meetings). Avoid active hiking cycles. Capacity ceiling remains near \$200,000 notional per trade. The expected annual Sharpe in a hold/cut environment is approximately 2.0–3.5 net of TC.
+**For a practitioner:** implement the two-track filter — trade all non-SEP meetings and apply the guidance-gap $|z| \leq 1.0$ screen only on SEP days. In a hold/cut environment, expect approximately 5–6 traded events per year (all 4–5 non-SEP meetings plus 1 small-z SEP meeting). Avoid active hiking cycles. Capacity ceiling remains near \$200,000 notional per trade. The expected annual Sharpe is driven almost entirely by the non-SEP track, which historically delivers approximately 3.0–4.0 net of TC.

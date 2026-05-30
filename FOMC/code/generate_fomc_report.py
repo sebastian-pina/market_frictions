@@ -14,7 +14,7 @@ from scipy import stats
 FIG_DIR = Path('figures')
 FIG_DIR.mkdir(exist_ok=True)
 
-df = pd.read_csv('fomc_surprise_table.csv', parse_dates=['date'])
+df = pd.read_csv('FOMC/fomc_surprise_table.csv', parse_dates=['date'])
 
 # ── Hardcoded summary stats from the pipeline ─────────────────────────────────
 SPREAD_RATIOS = {
