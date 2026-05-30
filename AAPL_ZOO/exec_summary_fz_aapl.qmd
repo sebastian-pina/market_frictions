@@ -1,0 +1,120 @@
+---
+title: "Microstructure Factor Zoo — AAPL"
+subtitle: "Executive Summary"
+author: "MGMTMFE 412 — Market Frictions"
+date: today
+format:
+  pdf:
+    documentclass: article
+    geometry: "margin=0.9in"
+    fontsize: 11pt
+    toc: false
+    number-sections: false
+    colorlinks: true
+    fig-pos: "H"
+    include-in-header:
+      text: |
+        \usepackage{booktabs}
+        \usepackage{float}
+        \usepackage{amsmath}
+        \usepackage{xcolor}
+        \definecolor{darkred}{RGB}{183,28,28}
+        \definecolor{darkblue}{RGB}{21,101,192}
+        \definecolor{darkgreen}{RGB}{46,125,50}
+---
+
+## Objective
+
+This project tests whether 11 real-time L2 order-book features derived from Databento MBP-10 data can generate profitable intraday trading signals for AAPL after accounting for bid-ask spread transaction costs. The central economic question is whether order-book predictability is already priced into the spread — consistent with the Glosten-Milgrom adverse-selection model of market making.
+
+## Data
+
+Databento XNAS ITCH MBP-10 snapshots (10-level book) for AAPL across three non-overlapping periods:
+
+| Split | Dates | Days | 1-second Bars |
+|-------|-------|------|---------------|
+| Training | Jan 2 – Feb 26, 2024 | 18 | 414,025 |
+| Validation | Feb 28 – Apr 1, 2024 | 7 | 161,088 |
+| Out-of-sample | Oct 1 – Oct 23, 2024 | 17 | ~391,000 |
+
+The 6-month gap between validation (Q1 2024) and OOS (Oct 2024) provides a genuine regime-change test: Q1 was characterized by low-volatility consolidation, while October 2024 saw a post-iPhone-launch uptrend.
+
+**Prediction target:** 60-second forward microprice return in basis points, winsorized at the 1st/99th percentile of training labels ($\sigma_y = 4.14$ bps).
+
+## Approach
+
+**Eleven stationary features** were constructed from raw book data: four Order Flow Imbalance metrics (OFI at 1, 5, 30 seconds, and multilevel), four book-shape features (imbalance ratio, depth ratio, bid slope, ask slope), and three dynamic features (microprice drift over 10 seconds, spread in bps, realized volatility over 60 seconds).
+
+Two models were trained: a Ridge regression (OLS, $\alpha=1.0$) and a LightGBM ensemble (100 trees, max depth 4, early stopping). All features are normalized to zero mean and unit variance per trading day before prediction. Signals above $|\hat{r}_t| > 0.50$ bps trigger trades executed via a walk-book fill model against the live ask or bid side of the order book.
+
+The break-even IC threshold is:
+$$\text{IC}_\text{break-even} = \frac{\text{spread}_\text{bps}}{\sigma_y} = \frac{0.54}{4.14} = 0.130$$
+
+Any model must achieve IC $\geq 0.130$ to generate positive expected PnL after paying the spread on both entry and exit legs.
+
+## Key Results
+
+| Model | Period | IC | Sharpe | Ann. Return | Hit Rate | N Trades | Avg Hold |
+|-------|--------|------|--------|-------------|----------|---------|---------|
+| OLS | Training | 0.029 | −7.1 | −\$9,160 | 22.3% | 260 | 23.5s |
+| OLS | Validation | 0.047 | −9.8 | −\$47,328 | 18.5% | 275 | 21.3s |
+| **OLS** | **OOS Oct-24** | **0.012** | **−22.7** | **−\$86,225** | **19.5%** | **606** | **22.2s** |
+| LightGBM | OOS Oct-24 | −0.003 | −3,956 | −\$253,492 | 14.9% | 2,680 | 17.4s |
+
+*Hit rate = % of individual trades profitable. Avg Hold = actual mean holding period; target is 60s but 78% of trades exit early via stop-loss.*
+
+The OLS validation IC of 0.047 is statistically significant ($t \approx 18$, $p < 0.001$), confirming that L2 features do contain genuine predictive information about 60-second price moves. However, 0.047 is only **36% of the break-even threshold (0.130)** — the signal is real but far too weak to overcome transaction costs.
+
+In October 2024 (OOS), the OLS IC collapses to 0.012 — a **76% attenuation** from validation. The primary cause is the `realized_vol` feature: it captures Q1 2024 volatility clustering, which does not transfer to the October momentum regime. Removing `realized_vol` in the ablation study drops training IC by 0.0114 (39% of total IC), making it the single most important and most brittle feature.
+
+LightGBM overfits severely: training IC of 0.103 falls to −0.003 OOS, generating 2,680 trades and losing \$253,492 due to massive over-trading on noise signals.
+
+## The Break-Even IC Barrier
+
+Every period's IC falls well below the 0.130 break-even threshold:
+
+| Period | OLS IC | Break-Even IC | Ratio |
+|--------|--------|---------------|-------|
+| Training | 0.029 | 0.130 | 0.22× |
+| Validation | 0.047 | 0.130 | 0.36× |
+| OOS Oct-24 | 0.012 | 0.130 | 0.09× |
+
+The AAPL bid-ask spread averages 0.54 bps. At AAPL's price of approximately \$185, one tick ($0.01) represents 5.4 bps — meaning even the minimum tick spread imposes a high bar. A taker strategy on AAPL must generate nearly 3× more IC than the best observed validation IC just to break even.
+
+## Risk Controls and Trade Mechanics
+
+All trades follow strict risk rules:
+- **Stop-loss** at 1.5× the entry spread from the entry midprice (not fill price) — triggered for 78% of OLS OOS trades
+- **Daily kill switch** halts trading if PnL falls below −2% of \$50,000 notional
+- **Inventory cap** at ±500 shares prevents runaway accumulation
+- **Walk-book fill model** realistically accounts for book depth consumption at entry and exit
+
+The stop-loss triggering at 78% of trades confirms that even the modest directional signal embedded in OFI and book imbalance features is insufficient to consistently move price in the predicted direction before the stop-loss is reached.
+
+## Capacity Analysis
+
+| AUM | Almgren-Chriss Market Impact | Assessment |
+|-----|------------------------------|------------|
+| \$10M | 0.3 bps | Within signal edge (but strategy still loses) |
+| \$100M | 2.5 bps | Impact cost exceeds already-negative alpha |
+| \$1B | 25.4 bps | Completely consumes any conceivable edge |
+
+The strategy is capacity-constrained below \$10M and unprofitable even there.
+
+## CAPM Attribution
+
+| Period | $\beta_\text{SPY}$ | $\alpha_\text{ann}$ |
+|--------|-------------------|---------------------|
+| Training | −0.06 | −0.17 |
+| Validation | +0.39 | −0.89 |
+| OOS Oct-24 | +0.46 | −1.62 |
+
+The strategy generates negative CAPM alpha across all periods. The positive OOS beta (+0.46) means the strategy takes inadvertent market exposure in October 2024 — it tends to buy on up-days (AAPL correlated with SPY), but the directional component only amplifies losses rather than generating systematic gain.
+
+## Conclusion
+
+**The signal is real but efficiently priced into the spread.** AAPL's L2 order-book features produce an IC of 0.047 on unseen validation data — statistically significant but economically insufficient, representing only 36% of the break-even threshold. The market maker has correctly set the half-spread equal to (or greater than) the expected 60-second adverse price move implied by these signals.
+
+Three paths to profitability exist but none are achievable with this setup: (1) achieve IC $\geq 0.130$ through substantially better feature engineering or higher-frequency data, (2) become a market maker and collect rather than pay the spread, or (3) find a structural market inefficiency where the spread/volatility ratio is temporarily below equilibrium.
+
+The project validates the Glosten-Milgrom model: in a liquid, informationally efficient market like AAPL, order-book predictability is already priced into the bid-ask spread, making taker strategies with predictive signals systematically unprofitable.
