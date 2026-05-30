@@ -2,7 +2,8 @@
 data/raw/
 __pycache__/
 *.pyc
-/figures/
-*.zip
 *.log
+*.txt
+*.zip
+/figures/
 .ipynb_checkpoints/
