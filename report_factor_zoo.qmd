@@ -1,0 +1,334 @@
+---
+title: "Microstructure Factor Zoo: L2 Order Book Features for 1-Minute Return Prediction"
+subtitle: "MGMTMFE 412 — Market Frictions — Final Project"
+author: "UCLA Anderson School of Management — Spring 2025"
+date: today
+format:
+  pdf:
+    documentclass: article
+    geometry: "margin=1in"
+    fontsize: 11pt
+    toc: true
+    number-sections: true
+    colorlinks: true
+    fig-pos: "H"
+    include-in-header:
+      text: |
+        \usepackage{booktabs}
+        \usepackage{float}
+---
+
+## Abstract
+
+We construct a "factor zoo" of 15 microstructure features derived from Level-2 order
+book data (Databento MBP-10, AAPL, 25 trading days, Jan–Apr 2024) and evaluate their
+ability to predict 1-minute forward microprice returns. Features include order flow
+imbalance at multiple lags, book shape variables (depth ratio, bid/ask slope), microprice
+dynamics, realized volatility, and trade-based signals (arrival rate, signed imbalance,
+queue exhaustion).
+
+**Key findings:** A ridge regression model achieves a stable Information Coefficient (IC)
+of **0.045** in both training and test periods — a statistically real but economically
+weak signal. A LightGBM model overfits severely (IC 0.50 train, 0.02 OOS), illustrating
+the data requirements for non-linear ML in microstructure. Ablation analysis identifies
+**microprice level, realized volatility, and signed trade imbalance** as the three most
+informative features. Consistent with the companion lead-lag study, transaction costs
+(bid-ask spread) eliminate all exploitable net alpha.
+
+---
+
+## Economic Motivation
+
+Order book microstructure encodes information about short-term price direction through
+at least three channels:
+
+1. **Order flow imbalance (OFI):** A buy-side book skew (more bid volume than ask
+   volume) predicts near-term price increases as market orders consume the ask side.
+
+2. **Book shape:** The slope and depth of the limit order book convey the "resistance"
+   prices face at different levels. A thin top-of-book relative to deeper levels signals
+   fragility and potential rapid price movement.
+
+3. **Trade-based signals:** The pace and direction of executed trades (arrival rate,
+   signed imbalance) reflect informed-trader activity that is not yet reflected in
+   quoted prices.
+
+These signals are the raw material of high-frequency predictive models. However, they
+operate at timescales where the bid-ask spread is a dominant cost — the same friction
+that prevented exploitation of the SPY lead-lag signal. This study asks: **how many
+of these signals are real, and how large are they relative to the spread?**
+
+---
+
+## Data
+
+| Item | Detail |
+|---|---|
+| Source | Databento XNAS.ITCH (Nasdaq ITCH feed) |
+| Schema | MBP-10 (10-level limit order book) + trades |
+| Symbol | AAPL |
+| Training | Jan 2 – Feb 26, 2024 (18 days; no earnings, no FOMC) |
+| Test (OOS) | Feb 28 – Apr 1, 2024 (7 days) |
+| Bar resolution | 1 second (resampled from tick data) |
+| Session | 9:30 AM – 4:00 PM ET; skip first 5 min and last 1 min |
+| Training bars | 414,155 |
+| Test bars | 160,873 |
+| Label mean / std (train) | −0.003 bps / 4.447 bps |
+| Label mean / std (test) | −0.131 bps / 5.233 bps |
+
+**Exclusions:** Feb 1, 2024 (AAPL earnings day) and FOMC days (Jan 31, Mar 20)
+were excluded to avoid event-specific regime contamination.
+
+**Data notes:** Raw Databento MBP-10 files exceed pyarrow 19.x compatibility due to a
+repetition-level histogram format. Files were loaded with the `fastparquet` engine.
+All `uint32` size columns were cast to `int64` before arithmetic to prevent overflow.
+
+---
+
+## Features
+
+### Feature Definitions
+
+| # | Feature | Formula / Method | Economic Intuition |
+|---|---|---|---|
+| 1 | `ofi_1` | $(B_0 - A_0)/(B_0 + A_0)$ | Instantaneous book pressure |
+| 2 | `ofi_5` | 5s rolling mean of `ofi_1` | Short-term momentum in book |
+| 3 | `ofi_30` | 30s rolling mean of `ofi_1` | Medium-term book trend |
+| 4 | `ofi_multilevel` | Mean OFI across levels 0–4 | Depth-weighted pressure |
+| 5 | `book_imbalance` | $B_0 / (B_0 + A_0) \in [0,1]$ | Normalized best-level skew |
+| 6 | `depth_ratio` | Top-3 qty / Levels 4–9 qty | Book fragility at top |
+| 7 | `bid_slope` | OLS slope of qty vs level (bid) | Bid-side depth profile |
+| 8 | `ask_slope` | OLS slope of qty vs level (ask) | Ask-side depth profile |
+| 9 | `microprice` | $(A_0 B_0 + B_0 A_0)/(B_0+A_0)$ | Weighted fair-value estimate |
+| 10 | `microprice_drift` | 10s rolling polyfit slope (bps) | Short-term price trend |
+| 11 | `spread` | $A_0 - B_0$ | Transaction cost / info proxy |
+| 12 | `realized_vol` | 60s rolling σ of microprice ret (bps) | Volatility regime |
+| 13 | `trade_arrival` | 30s rolling mean trade count/s | Informed trading intensity |
+| 14 | `signed_trade_imbal` | $(V^{buy}_{30} - V^{sell}_{30})/(V^{buy}_{30}+V^{sell}_{30})$ | Net buy/sell pressure |
+| 15 | `queue_exhaustion` | 5s trade vol at best / avg queue size | Book replenishment stress |
+
+where $B_i$ = bid quantity at level $i$, $A_i$ = ask quantity at level $i$.
+
+### Label Construction
+
+$$y_t = \frac{\text{microprice}_{t+60} - \text{microprice}_t}{\text{microprice}_t} \times 10^4 \quad [\text{bps}]$$
+
+The label is the 1-minute forward microprice return in basis points. Using the microprice
+(rather than the mid-price) as the reference prevents the label from mechanically
+reflecting bid-ask bounce.
+
+---
+
+## Models
+
+### Ridge Regression (OLS)
+
+A Ridge regression ($\alpha = 1.0$) with `StandardScaler` normalization serves as the
+linear baseline. Ridge provides mild regularization and produces coefficients interpretable
+as linear betas on each feature. The model is intentionally simple: if the features have
+real predictive content, it should be detectable even in a linear model.
+
+### LightGBM
+
+A gradient-boosted tree model (500 trees, learning rate 0.05, `min_child_samples=100`)
+is trained without early stopping on the training set. LightGBM can capture non-linear
+interactions and threshold effects that a linear model misses — but also has substantially
+higher capacity to overfit to noise.
+
+### Evaluation Metric: Information Coefficient (IC)
+
+$$\text{IC} = \rho(\hat{y}, y) = \text{Pearson correlation between predictions and realized labels}$$
+
+IC is standard in factor research. IC > 0 means the model has directional predictive
+content. Typical useful IC values in equity microstructure range from 0.02 to 0.10.
+An IC of 0.04–0.05 is weak but economically real.
+
+---
+
+## Results
+
+### Model Performance
+
+| Model | Train R² | Train IC | Test R² | Test IC |
+|---|---|---|---|---|
+| Ridge (OLS) | 0.0020 | **0.0452** | −0.0053 | **0.0461** |
+| LightGBM | 0.1939 | 0.5007 | −0.4815 | 0.0245 |
+
+**OLS:** The IC of 0.045 is stable across training and test periods. The $R^2$ of 0.002
+reflects that the model explains only 0.2% of label variance — but the signal is real
+and consistent. In a microstructure context, a stable IC of 0.04–0.05 at 1-second
+resolution is non-trivial; it means the model is marginally correct in direction more
+often than chance.
+
+**LightGBM:** The dramatic collapse from IC=0.50 to IC=0.02 OOS is a textbook
+overfitting failure. Despite 414K training samples, the label noise (std = 4.4 bps,
+effectively zero mean) makes it easy for 500 trees to memorize training-set
+patterns that do not generalize. The negative OOS $R^2$ of −0.48 means LightGBM
+predictions are worse than the naive zero-return forecast on the test set.
+
+**Interpretation:** This result is a calibration benchmark for any microstructure ML
+project. Without regime regularization, much larger training datasets, or architecturally-
+constrained models (e.g., recurrent networks with explicit time-series structure),
+gradient boosting will overfit to noise at 1-second resolution with 25 days of data.
+
+### Ablation Analysis
+
+The ablation measures IC drop on the **training set** when each feature is individually
+removed from the LightGBM model. All 15 features contribute positively (none degrades
+training IC), with three clear leaders:
+
+| Rank | Feature | IC Drop (removed) | Interpretation |
+|---|---|---|---|
+| 1 | `microprice` | +0.179 | Price level encodes volatility regime |
+| 2 | `realized_vol` | +0.121 | Vol clustering predicts high-vol forward bars |
+| 3 | `signed_trade_imbal` | +0.098 | Net buy pressure predicts direction |
+| 4 | `trade_arrival` | +0.098 | High activity signals informed trading |
+| 5 | `ofi_30` | +0.089 | 30s book trend is the strongest OFI signal |
+
+**Caveat:** Since the ablation uses the overfit LightGBM evaluated on the training set,
+it measures in-sample importance — not OOS contribution. Features that help LightGBM
+memorize training patterns may not generalize. The OLS model (which does generalize)
+uses all features with equal-weight Ridge regularization, so we cannot decompose OLS
+feature importance from ablation alone.
+
+**Economic interpretation of top features:**
+
+- **Microprice:** The absolute price level is a proxy for which volatility regime AAPL
+  is in (calm $183 vs volatile $188). Since realized vol clusters, knowing the current
+  microprice level helps predict future vol — but not direction, explaining why it helps
+  LGBM (which can learn non-linear vol patterns) more than linear direction prediction.
+
+- **Realized volatility:** Directly encodes the vol regime. High 60s realized vol
+  predicts larger absolute 1-minute forward returns. Whether LightGBM can capture the
+  direction from vol regime is less clear — but it is the clearest persistent signal.
+
+- **Signed trade imbalance:** Net buy flow over 30s is the most theoretically clean
+  directional predictor. Active buying pressure that moves through the order book signals
+  informed or momentum-driven demand.
+
+![LightGBM feature importance and ablation analysis](figures/factor_zoo_importance.png){width=95%}
+
+---
+
+## Threshold Optimization
+
+Training-set IC was evaluated at increasing prediction thresholds to identify the
+confidence level at which LightGBM predictions are most accurate:
+
+| Threshold (bps) | Trades selected | Train IC |
+|---|---|---|
+| 0.50 | 105,778 | 0.668 |
+| 1.00 | 48,235 | 0.740 |
+| 2.00 | 20,388 | 0.810 |
+| 3.00 | 10,787 | 0.848 |
+| 4.75 | 4,391 | **0.887** |
+
+Higher thresholds select the subset of bars where LightGBM is most confident —
+and on those bars, in-sample IC approaches 0.89. However, this optimization is entirely
+in-sample; on the test set, the same threshold of 4.75 bps fires 15,415 times in 7 days
+(vs 4,391 in 18 training days), a ratio consistent with an overfit model producing
+larger-magnitude predictions on unfamiliar data.
+
+The OLS model, which predicts in the range of ~0.1–0.5 bps, fires only 1–8 times at
+the 4.75 bps threshold. For OLS, the backtest reflects the honest weakness of a linear
+signal against a high bar for action.
+
+---
+
+## Backtest
+
+### Setup
+
+- **Notional:** \$50,000 per trade
+- **Shares per trade:** $\lfloor 50{,}000 / \text{microprice} \rfloor \approx 270$ shares
+- **Entry / exit:** microprice at entry and exit bars
+- **Transaction cost:** half-spread at entry + half-spread at exit (crossing the spread)
+- **Stop-loss:** exit early if unrealized loss exceeds $1.5 \times$ spread
+- **Inventory cap:** $\pm 500$ shares (prevents pyramid during trending markets)
+- **Daily kill switch:** halt all trading if daily net PnL $< -2\%$ of notional
+- **Threshold:** 4.75 bps (LightGBM train-optimal)
+
+### Results
+
+| Metric | OLS Train | OLS Test | LGBM Train | LGBM Test |
+|---|---|---|---|---|
+| Trades | 1 | 8 | 4,391 | 15,415 |
+| Hit rate | 0.0% | 0.0% | 94.6% | 42.3% |
+| Ann. return | −\$90 | −\$2,977 | +\$3.6M | +\$2.0M |
+| Sharpe | −3.74 | −6.00 | 13.89 | 15.70 |
+| Avg TC / trade | \$2.56 | \$4.46 | \$3.80 | \$3.12 |
+
+**OLS:** Almost no trades fire at 4.75 bps — the linear model's predictions rarely
+reach this magnitude. When they do, TC dominates and net PnL is negative.
+
+**LightGBM — caution required:** The train Sharpe of 13.89 reflects in-sample fitting
+that is not meaningful. The test result is more complex: 15,415 trades in 7 days with a
+42.3% directional hit rate (below 50%, confirming no directional OOS predictive power)
+but nominally positive PnL. This artifact arises because the overfit model coincidentally
+selects high-volatility bars; the stop-loss asymmetry (capped losses, uncapped wins)
+allows nominally positive expectation even with below-random direction accuracy.
+**These test backtest numbers should not be interpreted as evidence of a viable strategy.**
+
+The central finding from the backtest is that **no model architecture produces a
+reliable edge after transaction costs at 1-second resolution with 25 days of data**:
+the OLS signal is too weak (IC 0.045 → almost never exceeds threshold), and the LGBM
+signal overfits catastrophically.
+
+![Cumulative PnL — training and test sets](figures/factor_zoo_pnl.png){width=95%}
+
+---
+
+## Connection to Market Frictions
+
+This study is the natural third leg of our market frictions investigation. All three
+strategies share a common structure:
+
+| Strategy | Gross signal | TC impact | Net result |
+|---|---|---|---|
+| Lead-lag (SPY→AAPL) | Real (IC, cross-corr) | 9× gross PnL | Negative |
+| FOMC fade | Real (Sharpe 0.83, p=0.048) | Widens spread, limits entry | Positive in hold/cut |
+| Factor zoo (OLS) | Real (IC=0.045) | Dominates at any threshold | Negative |
+
+The factor zoo result reinforces the lead-lag conclusion: **a statistically real
+microstructure signal at 1-second resolution is not exploitable for participants paying
+the full bid-ask spread.** Break-even requires TC below approximately \$0.003/share —
+achievable only by co-located HFT market makers who post limit orders and earn maker
+rebates rather than crossing the spread.
+
+The spread does not merely cost money — it is also an information signal. The `spread`
+feature itself appears in the ablation (rank 8), partly because wider spreads predict
+more uncertain near-term price evolution. This dual role of the spread — as transaction
+cost and as information — is the central mechanism of adverse-selection models and a
+recurring theme across all three strategies in this project.
+
+> **The bid-ask spread is the universal gatekeeper.** It prevents retail and institutional
+> traders from exploiting real microstructure inefficiencies, whether arising from
+> index ETF arbitrage latency (lead-lag), FOMC announcement overshoots, or order book
+> imbalance signals. The edge belongs to participants for whom the spread is a
+> revenue source, not a cost.
+
+---
+
+## Conclusion
+
+We documented 15 microstructure features from Level-2 AAPL data and evaluated their
+predictive power for 1-minute forward microprice returns. The main findings are:
+
+1. **A real but weak signal exists.** Ridge regression achieves IC = 0.045 in both
+   training and out-of-sample periods. The signal is too small to generate net PnL
+   after transaction costs but confirms that L2 order book features carry genuine
+   information about short-term price direction.
+
+2. **Non-linear models overfit severely.** LightGBM (500 trees) achieves train IC = 0.50
+   but OOS IC = 0.02 on only 7 test days. Reliable ML-based HFT requires substantially
+   larger datasets (years of data), stronger regularization, or architectures that embed
+   economic structure rather than learning it from scratch.
+
+3. **The most informative features** are microprice level (vol regime proxy), realized
+   60s volatility (vol clustering), signed 30s trade imbalance (directional flow), and
+   30s OFI (book pressure trend). These are consistent with adverse-selection models
+   of market making: informed flow and volatility regime dominate over static book shape.
+
+4. **Transaction costs are insurmountable** for any participant paying the full
+   bid-ask spread. The conclusion mirrors the lead-lag study exactly: the signal
+   is real, the friction is decisive.

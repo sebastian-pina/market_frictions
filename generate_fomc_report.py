@@ -439,6 +439,95 @@ def fig_sep_vs_ois():
                          'surprise_ffr_minus_dgs2', 'net_pnl']].to_string(index=False))
 
 
+# ── Fig 8: Two-track strategy breakdown ──────────────────────────────────────
+def fig_two_track():
+    """Show the SEP vs non-SEP event breakdown and two-track portfolio performance."""
+    plot_df = df.dropna(subset=['net_pnl','surprise_type']).copy()
+    plot_df = plot_df.sort_values('date').reset_index(drop=True)
+
+    # Define tracks
+    non_sep    = plot_df[plot_df['surprise_type'] == 'target'].copy()
+    sep_small  = plot_df[(plot_df['surprise_type'] == 'SEP') &
+                          (plot_df['signal_class'] == 'small')].copy()
+    sep_excl   = plot_df[(plot_df['surprise_type'] == 'SEP') &
+                          (plot_df['signal_class'].isin(['medium','large']))].copy()
+    two_track  = pd.concat([non_sep, sep_small]).sort_values('date').reset_index(drop=True)
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+    # ── Left: Cumulative PnL for each track ───────────────────────────────────
+    ax = axes[0]
+    all_sorted = plot_df.copy()
+    ax.plot(range(len(all_sorted)), all_sorted['net_pnl'].cumsum(),
+            color='grey', linewidth=1.5, linestyle='--', alpha=0.6, label='Unfiltered (40 events)')
+    ax.plot(range(len(two_track)), two_track['net_pnl'].cumsum(),
+            color='#1565C0', linewidth=2.5, label=f'Two-track (29 events): SEP|z|≤1.0 + all non-SEP')
+    ax.plot(range(len(non_sep)), non_sep['net_pnl'].cumsum(),
+            color='#42A5F5', linewidth=2.0, linestyle='-.', label=f'Non-SEP only (22 events)')
+    ax.plot(range(len(sep_excl)), sep_excl['net_pnl'].cumsum(),
+            color='#90CAF9', linewidth=1.5, linestyle=':', label=f'Excluded SEP events (11 events)')
+
+    ax.axhline(0, color='black', linewidth=0.6, linestyle=':')
+    ax.set_xlabel('Event count', fontsize=10)
+    ax.set_ylabel('Cumulative Net PnL ($)', fontsize=10)
+    ax.set_title('Two-Track Cumulative PnL\n(non-SEP always-trade vs SEP z-score filtered)',
+                 fontsize=10)
+    ax.legend(fontsize=8.5)
+    ax.grid(True, alpha=0.3)
+
+    # Annotate final values
+    for data, label, color in [
+        (two_track, f'+${two_track["net_pnl"].sum():,.0f}', '#1565C0'),
+        (non_sep,   f'+${non_sep["net_pnl"].sum():,.0f}',   '#42A5F5'),
+        (sep_excl,  f'${sep_excl["net_pnl"].sum():,.0f}',   '#90CAF9'),
+    ]:
+        n = len(data)
+        val = data['net_pnl'].cumsum().iloc[-1] if not data.empty else 0
+        ax.annotate(label, xy=(n-1, val), xytext=(5, 0), textcoords='offset points',
+                    fontsize=8, color=color, fontweight='bold')
+
+    # ── Right: Annual PnL decomposition by track ──────────────────────────────
+    ax = axes[1]
+    years = sorted(plot_df['year'].unique())
+    x = np.arange(len(years))
+    w = 0.25
+
+    nonsep_yr  = non_sep.groupby('year')['net_pnl'].sum().reindex(years, fill_value=0)
+    sepsm_yr   = sep_small.groupby('year')['net_pnl'].sum().reindex(years, fill_value=0)
+    sepexcl_yr = sep_excl.groupby('year')['net_pnl'].sum().reindex(years, fill_value=0)
+
+    ax.bar(x - w, nonsep_yr.values,  w, color='#1565C0', alpha=0.85, label='Non-SEP (traded)')
+    ax.bar(x,     sepsm_yr.values,   w, color='#42A5F5', alpha=0.85, label='SEP small |z|≤1.0 (traded)')
+    ax.bar(x + w, sepexcl_yr.values, w, color='#90CAF9', alpha=0.6,  label='SEP excl. |z|>1.0 (skipped)')
+    ax.axhline(0, color='black', linewidth=0.8)
+    ax.set_xticks(x)
+    ax.set_xticklabels([str(y) for y in years], fontsize=11)
+    ax.set_xlabel('Year', fontsize=10)
+    ax.set_ylabel('Annual Net PnL ($)', fontsize=10)
+    ax.set_title('Annual PnL by Track\n(Non-SEP events are the primary PnL driver)', fontsize=10)
+    ax.legend(fontsize=9)
+    ax.grid(True, axis='y', alpha=0.3)
+
+    # Summary stats annotation
+    sharpe_tt = (two_track['net_pnl'].mean() / two_track['net_pnl'].std() *
+                 np.sqrt(len(two_track))) if len(two_track) > 1 else 0
+    _, p_tt = stats.ttest_1samp(two_track['net_pnl'], 0)
+    sharpe_ns = (non_sep['net_pnl'].mean() / non_sep['net_pnl'].std() *
+                 np.sqrt(len(non_sep))) if len(non_sep) > 1 else 0
+    _, p_ns = stats.ttest_1samp(non_sep['net_pnl'], 0)
+    ax.text(0.02, 0.97,
+            f'Two-track (29 events): Sharpe={sharpe_tt:.2f}, p={p_tt:.3f}\n'
+            f'Non-SEP (22 events):   Sharpe={sharpe_ns:.2f}, p={p_ns:.3f}',
+            transform=ax.transAxes, fontsize=8.5, va='top',
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
+
+    plt.suptitle('Two-Track FOMC Filter: SEP vs. Non-SEP Event Decomposition', fontsize=12, y=1.01)
+    plt.tight_layout()
+    fig.savefig(FIG_DIR / 'fomc_two_track.png', dpi=150, bbox_inches='tight')
+    plt.close()
+    print('Saved fomc_two_track.png')
+
+
 if __name__ == '__main__':
     print('Generating FOMC report figures...')
     fig_spread_ratio()
@@ -448,4 +537,5 @@ if __name__ == '__main__':
     fig_regime_pnl()
     fig_tc_trend()
     fig_sep_vs_ois()
+    fig_two_track()
     print('\nDone. Saved to figures/')

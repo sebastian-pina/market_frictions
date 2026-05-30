@@ -1,0 +1,235 @@
+---
+title: "Microstructure Factor Zoo — NVDA"
+subtitle: "L2 Order-Book Signals vs. the Bid-Ask Spread Barrier"
+author: "MGMTMFE 412 — Market Frictions"
+date: today
+format:
+  pdf:
+    documentclass: article
+    geometry: "margin=0.85in"
+    fontsize: 11pt
+    toc: false
+    number-sections: true
+    colorlinks: true
+    fig-pos: "H"
+    include-in-header:
+      text: |
+        \usepackage{booktabs}
+        \usepackage{float}
+        \usepackage{amsmath}
+        \usepackage{xcolor}
+        \definecolor{darkred}{RGB}{183,28,28}
+        \definecolor{darkblue}{RGB}{21,101,192}
+        \definecolor{darkgreen}{RGB}{46,125,50}
+---
+
+## One-Line Thesis
+
+> We build 11 order-book features from Databento MBP-10 data for NVDA,
+> train Ridge (OLS) and LightGBM models on Jan--Feb 2024 (18 days),
+> and test on Oct 2024 (17 days).
+> **The in-sample signal is stronger than AAPL (OLS Val IC = 0.093 vs 0.047),
+> but NVDA's wider fractional spread (2.29 bps vs 0.54 bps) raises the break-even
+> IC to 0.247 — nearly 2$\times$ AAPL's. The OOS IC (0.012) is only 4.9\% of
+> break-even. Market efficiency holds: higher predictability is priced into higher spreads.**
+
+---
+
+## Economic Intuition: Why NVDA Has Stronger Signals
+
+NVDA is driven by high institutional and informed flow:
+
+| Factor | NVDA vs AAPL | Implication |
+|--------|-------------|-------------|
+| Intraday volatility | $\sigma_y = 9.3$ bps vs 4.1 bps | 2.2$\times$ more gross alpha per unit IC |
+| Informed flow intensity | Heavy options and futures activity | OFI and OFI-multilevel are more predictive |
+| Market-maker response | Wider spreads to compensate | BE_IC rises proportionally |
+
+**The friction:** Market makers on NVDA face greater adverse-selection risk from informed
+institutional traders. They respond by widening spreads proportionally — the
+spread/vol ratio stays high, making it as hard (or harder) to profit as a taker.
+
+---
+
+## Data and Features
+
+**Dataset:** Databento XNAS ITCH MBP-10 (10-level book snapshots), NVDA, 2024.
+
+| Split | Period | Days | 1s Bars | $y$ std | Winsor range |
+|-------|--------|------|---------|---------|-------------|
+| Train | Jan--Feb 2024 | 18 | 414,025 | 9.28 bps | [−28.66, +28.02] bps |
+| Val | Feb--Apr 2024 | 7 | 161,088 | — | same bounds |
+| **OOS** | **Oct 2024** | **17** | **391,679** | 9.24 bps | same bounds |
+
+**Label:** $y_t = \left(\frac{m_{t+60}}{m_t} - 1\right) \times 10^4$ bps
+(60-second forward microprice return, winsorised at 1st/99th pct of training labels)
+
+**11 features:** identical set as AAPL (book-only, stationary across 6-month gap).
+
+---
+
+## The Break-Even IC — NVDA vs AAPL
+
+$$\text{IC}_\text{break-even} = \frac{\text{spread (bps)}}{\sigma_y \text{ (bps)}} =
+\frac{2.294}{9.283} = \mathbf{0.247}$$
+
+| Symbol | Spread (bps) | $\sigma_y$ (bps) | $\text{IC}_\text{be}$ | OLS Val IC | OLS OOS IC | OOS/BE |
+|--------|-------------|------|------|---------|---------|------|
+| AAPL | 0.54 | 4.14 | 0.130 | 0.047 | 0.012 | 0.088$\times$ |
+| **NVDA** | **2.29** | **9.28** | **0.247** | **0.093** | **0.012** | **0.049$\times$** |
+
+**Key insight:** NVDA's spread is 4.3$\times$ larger in bps than AAPL's — more than
+compensating for the 2.2$\times$ higher volatility. Market makers correctly price
+the higher adverse-selection risk of a heavily informed stock.
+
+The theoretical prediction (lower spread_bps for higher-priced stocks due to tick-size)
+does not hold here: NVDA at \$600 has *wider* fractional spreads than AAPL at \$185
+because informed flow is disproportionately higher.
+
+---
+
+## The 11 Features: Ablation on NVDA
+
+![Feature importance: OLS coefficients, LightGBM gain, ablation IC drop — NVDA](figures/fz_nvda_importance.png){width=100%}
+
+**Key differences from AAPL:**
+
+- `microprice_drift` is the dominant single feature ($\Delta$IC = 0.00073) for NVDA,
+  reflecting that NVDA's microprice leads quoted mid more persistently
+- `realized_vol` IC drop (0.00039) is smaller relative to total IC than on AAPL
+  (0.0114/0.029 = 39\%) — regime sensitivity is lower for NVDA
+- OLS Train IC = 0.0806 (nearly 3$\times$ AAPL's 0.029) — the signal is substantially
+  stronger in-sample, consistent with richer informed flow
+
+---
+
+## Signal Analysis: IC by Period
+
+![IC by model and period with break-even IC threshold — NVDA](figures/fz_nvda_ic.png){width=90%}
+
+**Key observations:**
+
+- **Strong in-sample signal:** OLS Val IC = 0.093 ($t \approx 37$, highly significant)
+- **Sharp OOS decay:** OOS IC = 0.012 — 87\% collapse from Val, similar to AAPL
+- **Break-even bar (0.247) is well above all IC bars** — every period fails to clear
+- **LightGBM overfits:** Train IC = 0.110, OOS IC = 0.006 (25 trees, early stopping)
+
+The higher absolute IC in training is fully offset by the higher break-even IC.
+The market efficiency condition $\text{IC} \approx \text{spread}/\sigma_y$ holds
+tightly on NVDA: even with 3$\times$ stronger signal, it remains unprofitable.
+
+---
+
+## Trade Mechanics
+
+**Signal generation:** $|\hat{r}_t| > 1.90$ bps (threshold optimised on Val set).
+Note: NVDA's threshold is 3.8$\times$ AAPL's (0.50 bps) — reflecting higher $\sigma_y$.
+
+**Execution:**
+- Entry: fills at `ask_px_00` (long) or `bid_px_00` (short)
+- Exit: 60 seconds later at `bid_px_00` (or ask for close)
+- Early exits: stop-loss at 1.5$\times$ spread from entry midprice; signal flip
+
+**Position sizing:** $\text{shares} = \lfloor \$50{,}000 / \text{ask\_px} \rfloor \approx 83$ shares
+at NVDA $\approx \$600$
+
+**Risk controls:** identical to AAPL (±500 shares cap, −2\% daily kill switch).
+
+---
+
+## Backtest Results
+
+![Cumulative PnL — NVDA (gross bars, net line)](figures/fz_nvda_pnl.png){width=100%}
+
+### All-period metrics
+
+| Model | Period | IC | Sharpe | Ann. Ret. | MaxDD | Hit Rate | N Trades | Avg TC |
+|---|---|---|---|---|---|---|---|---|
+| OLS | Train | 0.081 | −11.1 | −\$47,600 | −\$3,414 | 20.8% | 125 | \$36.41 |
+| OLS | Val | 0.093 | −21.3 | −\$71,683 | −\$1,899 | 23.4% | 77 | \$39.96 |
+| **OLS** | **OOS Oct-24** | **0.012** | **−14.8** | **−\$88,220** | **−\$5,892** | **16.9%** | **762** | **\$8.74** |
+| LightGBM | Train | 0.110 | −8.6 | −\$50,361 | −\$3,587 | 38.2% | 157 | \$45.52 |
+| LightGBM | OOS Oct-24 | 0.006 | −8.2 | −\$8,843 | −\$469 | 9.5% | 21 | \$21.10 |
+
+*Hit rate = % of individual TRADES profitable.*
+
+**Notable:** OLS OOS has 762 trades (9$\times$ more than OLS Train). The higher OOS trade
+count reflects looser signal threshold relative to OOS IC — model over-generates signals when
+the underlying IC has collapsed.
+
+---
+
+## Inventory and Rolling Sharpe — NVDA
+
+![Intraday position in shares — NVDA](figures/fz_nvda_inventory.png){width=95%}
+
+![21-day rolling Sharpe (annualised) — NVDA](figures/fz_nvda_rolling_sharpe.png){width=95%}
+
+- NVDA holds ±83 shares per trade (smaller than AAPL's ±270 at comparable notional)
+- Rolling Sharpe is deeply negative across all periods
+- OLS OOS exit reasons: 64% stop-loss (617/964), 21% timeout (201), 15% signal flip (146)
+- Signal flip exits (absent in AAPL) reflect NVDA's higher IC oscillation — the model
+  sometimes correctly reverses before 60s, but not often enough to recover TC
+
+---
+
+## CAPM Decomposition — NVDA
+
+| Model | Period | $\beta_\text{SPY}$ | $\alpha_\text{ann}$ |
+|---|---|---|---|
+| OLS | Train | −0.22 | −0.90 |
+| OLS | Val | +0.50 | −1.31 |
+| OLS | OOS | +0.59 | −1.90 |
+| LightGBM | OOS | +0.02 | −0.18 |
+
+- **OLS OOS beta = +0.59**: NVDA strategy is *not* market-neutral in OOS —
+  the model takes more net longs on NVDA up-days (NVDA correlates with market)
+- **Negative alpha across all periods**: TC destroys all CAPM alpha
+
+---
+
+## Risk Discussion — NVDA
+
+### Failure Regimes
+
+| Regime | Why it fails harder than AAPL |
+|--------|-------------------------------|
+| Informed flow spikes (AI news, earnings) | OFI becomes noisy; signal flips sign |
+| Volatility spikes (spread widens 2--5$\times$) | TC can hit \$50+/trade; BE_IC doubles |
+| OOS regime shift | microprice_drift trained on \$600 bull trend; Oct-24 dynamics differ |
+
+### Why NVDA is NOT the easy win it appears
+
+The pre-analysis hypothesis was:
+> *"NVDA has 0.17 bps spread (lower than AAPL's 0.54 bps) due to HFT competition
+> on a \$600 stock → break-even IC $\approx$ 0.017"*
+
+**The data refutes this:** NVDA's actual spread in bps is 2.29 — *higher* than AAPL's.
+Market makers on NVDA charge more because informed institutional flow is disproportionately
+higher. The tick-size argument (lower bps spread for higher-priced stocks) fails when
+adverse-selection risk dominates.
+
+### Capacity Analysis (Almgren-Chriss)
+
+| AUM | Impact (bps) | Assessment |
+|-----|-------------|------------|
+| \$10M | 0.2 bps | Viable — minimal impact |
+| \$100M | 2.0 bps | Cost rises; already unprofitable strategy |
+| \$1B | 19.9 bps | Far exceeds signal edge |
+
+---
+
+## Conclusion
+
+1. **NVDA signal is 3$\times$ stronger than AAPL** — OLS Val IC = 0.093 vs 0.047
+2. **NVDA spread is 4.3$\times$ wider (in bps)** — market makers price adverse selection correctly
+3. **Break-even IC = 0.247**, nearly 2$\times$ AAPL's 0.130
+4. **OOS IC/BE ratio = 0.049$\times$** — needs 20$\times$ more IC to break even (worse than AAPL's 11$\times$)
+5. **Market efficiency holds tightly:** Stronger predictability is fully priced into wider spreads
+
+> **Bottom line:** NVDA's richer informed-flow environment creates genuine signals
+> but also justifies the wider spread. The strategy fails even more decisively than
+> on AAPL. Both symbols confirm the same thesis: **the bid-ask spread correctly prices
+> the short-horizon predictability of order-book signals.**
+> Profitability requires either (a) becoming a market maker, or (b) finding a structural
+> market where spread/vol compression is not yet in equilibrium.

@@ -1,0 +1,95 @@
+---
+title: "Executive Summary: Lead-Lag Trading"
+subtitle: "SPY → AAPL and SPY → NVDA | MGMTMFE 412 — Market Frictions"
+author: "UCLA Anderson School of Management — Spring 2025"
+date: today
+format:
+  pdf:
+    documentclass: article
+    geometry: "margin=1.1in, top=0.9in, bottom=0.9in"
+    fontsize: 11pt
+    number-sections: false
+    colorlinks: true
+    include-in-header:
+      text: |
+        \usepackage{booktabs}
+        \usepackage{float}
+---
+
+## Intuition
+
+SPY is the most liquid security in the world. When a large buy order hits the SPY
+book, the price adjusts in *microseconds*. But AAPL and NVDA — even though they are
+components of the same index — take **1 to 3 seconds longer** to reflect that move.
+
+Why? Because the price transmission mechanism requires human or algorithmic
+intermediaries to notice the SPY move, calculate its implication for individual stocks,
+and place orders. That process is fast, but not instantaneous.
+
+This creates a brief, predictable window: **SPY moves first, the constituent stocks
+follow**. If you can observe SPY moving up and enter AAPL before it catches up, you
+capture a small but consistent profit.
+
+---
+
+## Strategy
+
+We use Level-2 order book data (Databento MBP-10) at **1-second resolution** for
+January–April 2024. The signal fires when two conditions hold simultaneously:
+
+1. SPY's 1-second return exceeds **1.0 bps** — a meaningful directional move
+2. SPY's order flow imbalance (OFI) exceeds **0.40** — buy-side pressure confirms
+   the move is not noise
+
+When the signal fires, we enter the constituent stock (AAPL or NVDA) in the same
+direction as SPY and hold for **5 seconds**, then exit. Position size: 100 shares.
+
+---
+
+## Results
+
+The lead-lag signal is **statistically real**. Gross PnL is positive in both stocks
+in both the training and test periods — the pattern is not random.
+
+But here is the central finding: **transaction costs destroy all the alpha**.
+
+To enter and exit a trade, we must cross the bid-ask spread twice — once on the way
+in, once on the way out. For AAPL this costs about **\$1.18 per trade** on average.
+The gross profit per trade is only **\$0.13**. Transaction costs are **9 times larger**
+than the gross edge.
+
+| | AAPL | NVDA |
+|---|---|---|
+| Gross PnL (train + test) | +\$42 | +\$1,038 |
+| Transaction costs | −\$376 | −\$6,679 |
+| **Net PnL** | **−\$334** | **−\$5,641** |
+| TC as multiple of gross alpha | **9×** | **7.5×** |
+
+NVDA has a longer lag (1–3 seconds vs 1 second for AAPL) and generates 20× more
+gross PnL — but its spread is 4× wider, producing a similarly lopsided TC/PnL ratio.
+This reveals a fundamental tradeoff: the stocks with the longest exploitable lag always
+have the highest transaction costs, because *slower price discovery and lower liquidity
+go hand in hand*.
+
+---
+
+## The Break-Even Insight
+
+For this strategy to be profitable, a trader would need transaction costs below
+**\$0.0013 per share** — roughly 10 times cheaper than what a typical institutional
+investor pays. This level is only achievable by co-located HFT firms that post limit
+orders and collect maker rebates rather than crossing the spread.
+
+> **The bid-ask spread is the friction that prevents retail and institutional traders
+> from exploiting a real market inefficiency.** The edge exists — it just belongs
+> entirely to HFT.
+
+---
+
+## Connection to Market Frictions
+
+This result is a textbook illustration of the course's central theme. The lead-lag
+relationship represents a genuine price inefficiency: information in SPY is not
+instantly reflected in its components. But the cost of exploiting it — the bid-ask
+spread — perfectly screens out all but the fastest, cheapest participants. The market
+is not perfectly efficient; it is *efficiently protected by friction*.
