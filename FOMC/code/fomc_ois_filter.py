@@ -2,18 +2,27 @@
 FOMC Rate-Path Surprise Filter — Two-Track Framework
 ======================================================
 SEP days (Mar/Jun/Sep/Dec): extrapolate an implied 1Y and 2Y rate from the dot-plot
-    using the expectations hypothesis (linear path from current EFFR to year-end target,
-    then flat). Compare each implied rate against the matching Treasury (DGS1 / DGS2)
-    from the prior day and normalize by rolling 30-day vol of that rate.
+    using the expectations hypothesis with MULTI-YEAR SEP projections. The dot-plot
+    publishes year-end rate projections for the current year + next 2-3 years.
+    We integrate the full implied path over a 24-month horizon.
 
-    r_1Y_impl = [M_rem*(r0+r_YE)/2 + m*r_YE] / 12
-    r_2Y_impl = [M_rem*(r0+r_YE)/2 + (12+m)*r_YE] / 24
-    where M_rem = 12-m = months remaining in year, m = meeting month, r0 = EFFR prior day
+    Non-December meetings (month m = 3, 6, 9; M_rem = 12-m remaining months in year):
+        Phase 1 (M_rem months): linear ramp r0 → r_YE1  (current year remaining)
+        Phase 2 (12 months):    linear ramp r_YE1 → r_YE2  (entire next calendar year)
+        Phase 3 (m months):     flat at r_YE2  (first m months of year+2)
 
-    z_1Y = (r_1Y_impl - DGS1_prev)*100 / max(σ_30d(DGS1), 8 bps)
-    z_2Y = (r_2Y_impl - DGS2_prev)*100 / max(σ_30d(DGS2), 8 bps)
+        r_1Y = [M_rem*(r0+r_YE1)/2 + m*(r_YE1+(r_YE2-r_YE1)*m/24)] / 12
+        r_2Y = [M_rem*(r0+r_YE1)/2 + 12*(r_YE1+r_YE2)/2 + m*r_YE2] / 24
 
-    Filter threshold: |z| <= 1.0.  Both z_1Y and z_2Y are computed; results compared.
+    December meetings (m=12; r_YE1=next-year-end, r_YE2=year-after-next-end):
+        r_1Y = (r0 + r_YE1) / 2
+        r_2Y = (r0 + 2*r_YE1 + r_YE2) / 4
+
+    z_2Y = (r_2Y - ACMRNY02_prev)*100 / max(σ_30d(ACMRNY02), 8 bps)
+         ACMRNY02 = ACM risk-neutral 2Y yield (DGS2 minus term premium).
+         Dots are pure-expectations; comparison must strip the term premium.
+
+    Filter threshold: |z_2Y| <= 1.0.  z_1Y also computed for comparison.
 
 Non-SEP days: always trade (no filter).
     The rate decision alone is the only new information; it is almost always fully priced.
@@ -21,6 +30,7 @@ Non-SEP days: always trade (no filter).
 import matplotlib
 matplotlib.use('Agg')
 import warnings; warnings.filterwarnings('ignore')
+import io
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -68,15 +78,32 @@ REGIME = {
     '2025-10-29':'hold',       '2025-12-10':'cut-25',
 }
 
-# ── SEP dot-plot: year-end FFR median projection at each quarterly meeting ────
+# ── SEP dot-plot: multi-year FFR median projections at each quarterly meeting ──
 # Source: FOMC Summary of Economic Projections (released same time as statement)
-SEP_DATA = {
-    '2021-03-17': 0.125, '2021-06-16': 0.125, '2021-09-22': 0.125, '2021-12-15': 0.875,
-    '2022-03-16': 1.875, '2022-06-15': 3.375, '2022-09-21': 4.375, '2022-12-14': 5.125,
-    '2023-03-22': 5.125, '2023-06-14': 5.625, '2023-09-20': 5.625, '2023-12-13': 4.625,
-    '2024-03-20': 4.625, '2024-06-12': 5.125, '2024-09-18': 4.375, '2024-12-18': 3.875,
-    '2025-03-19': 3.875, '2025-06-18': 3.875,
+# Format: (r_YE1, r_YE2)
+#   Non-December: r_YE1 = current-year-end, r_YE2 = next-year-end
+#   December:     r_YE1 = next-year-end,    r_YE2 = year-after-next-end
+SEP_MULTIYEAR = {
+    '2021-03-17': (0.125, 0.125),   # 2021 YE=0.125, 2022 YE=0.125 (dots flat at ZLB)
+    '2021-06-16': (0.125, 0.125),   # 2021 YE=0.125, 2022 YE=0.125
+    '2021-09-22': (0.125, 0.250),   # 2021 YE=0.125, 2022 YE=0.250 (first hike split)
+    '2021-12-15': (0.875, 1.625),   # 2022 YE=0.875, 2023 YE=1.625 (December)
+    '2022-03-16': (1.875, 2.750),   # 2022 YE=1.875, 2023 YE=2.750
+    '2022-06-15': (3.375, 3.750),   # 2022 YE=3.375, 2023 YE=3.750
+    '2022-09-21': (4.375, 4.625),   # 2022 YE=4.375, 2023 YE=4.625
+    '2022-12-14': (5.125, 4.125),   # 2023 YE=5.125, 2024 YE=4.125 (December)
+    '2023-03-22': (5.125, 4.250),   # 2023 YE=5.125, 2024 YE=4.250
+    '2023-06-14': (5.625, 4.625),   # 2023 YE=5.625, 2024 YE=4.625
+    '2023-09-20': (5.625, 5.125),   # 2023 YE=5.625, 2024 YE=5.125
+    '2023-12-13': (4.625, 3.625),   # 2024 YE=4.625, 2025 YE=3.625 (December)
+    '2024-03-20': (4.625, 3.875),   # 2024 YE=4.625, 2025 YE=3.875
+    '2024-06-12': (5.125, 4.125),   # 2024 YE=5.125, 2025 YE=4.125
+    '2024-09-18': (4.375, 3.375),   # 2024 YE=4.375, 2025 YE=3.375
+    '2024-12-18': (3.875, 3.375),   # 2025 YE=3.875, 2026 YE=3.375 (December)
+    '2025-03-19': (3.875, 3.625),   # 2025 YE=3.875, 2026 YE=3.625
+    '2025-06-18': (3.875, 3.625),   # 2025 YE=3.875, 2026 YE=3.625
 }
+SEP_DATA  = {k: v[0] for k, v in SEP_MULTIYEAR.items()}  # r_YE1 backward compat
 SEP_DATES = set(SEP_DATA.keys())
 
 
@@ -97,7 +124,7 @@ def load_day_bars(date_str):
     p = DATA_DIR / 'SPY' / 'mbp-10' / f'{date_str}.parquet'
     if not p.exists():
         return None
-    df = pd.read_parquet(p, engine='fastparquet', columns=BOOK_COLS).sort_index()
+    df = pd.read_parquet(p, engine='pyarrow', columns=BOOK_COLS).sort_index()
     df.index = df.index.tz_convert(ET)
     bid   = df['bid_sz_00'].astype(np.int64)
     ask   = df['ask_sz_00'].astype(np.int64)
@@ -174,6 +201,29 @@ dgs2,   roll_std_dgs2   = fetch_fred(FRED_DGS2_URL,   'DGS2',   'DGS2  (2-Year T
 dgs1mo, roll_std_dgs1mo = fetch_fred(FRED_DGS1MO_URL, 'DGS1MO', 'DGS1MO (1-Month Treasury)')
 effr,   _               = fetch_fred(FRED_EFFR_URL,   'EFFR',   'EFFR  (Effective FFR)')
 
+# ── 1b. ACM risk-neutral 2Y yield (NY Fed) — pure-expectations 2Y rate
+# ACMRNY02 = DGS2 - ACMTP02; dots are pure-expectations, so comparison must match.
+# Data is monthly; reindexed to daily DGS2 grid with ffill (prior month-end is observable).
+NYFED_ACM_URL = ('https://www.newyorkfed.org/medialibrary/media/research/'
+                 'data_indicators/ACMTermPremium.xls')
+dgs2_rn          = None
+roll_std_dgs2_rn = None
+print('Fetching ACM risk-neutral 2Y yield (NY Fed)...')
+try:
+    with urllib.request.urlopen(NYFED_ACM_URL, timeout=30) as r:
+        raw = r.read()
+    acm_df  = pd.read_excel(io.BytesIO(raw), index_col=0, parse_dates=True)
+    acmrny2 = acm_df['ACMRNY02'].dropna()
+    acmrny2 = acmrny2.loc['2020-01-01':]
+    print(f'  Loaded {len(acmrny2)} obs ({acmrny2.index[0].date()} – {acmrny2.index[-1].date()})')
+    if dgs2 is not None:
+        # Monthly ACM → daily grid; ffill carries prior month-end (observable at trade time)
+        dgs2_rn          = acmrny2.reindex(dgs2.index, method='ffill')
+        dgs2_rn_diff     = dgs2_rn.diff() * 100
+        roll_std_dgs2_rn = dgs2_rn_diff.rolling(30, min_periods=10).std()
+except Exception as e:
+    print(f'  ACM fetch failed: {e}')
+
 
 # ── 2. Per-event PnL and surprise (two-track) ─────────────────────────────────
 print('\nComputing per-event PnL and surprise...')
@@ -189,12 +239,12 @@ for fomc_str in ALL_FOMC:
 
     # ── Surprise measure ─────────────────────────────────────────────────────
     if fomc_str in SEP_DATES:
-        # SEP track: extrapolate implied 1Y and 2Y rates from dot-plot median
-        # via expectations hypothesis (linear path EFFR → r_YE, then flat).
+        # SEP track: extrapolate implied 1Y and 2Y rates from dot-plot using
+        # multi-year SEP projections and the expectations hypothesis.
         # Both inputs available at 14:01: SEP released at 14:00; EFFR/DGS from prior close.
-        sep_median = SEP_DATA[fomc_str]
+        r_YE1, r_YE2 = SEP_MULTIYEAR[fomc_str]
+        sep_median = r_YE1   # primary year-end projection (backward compat label)
         m          = fomc_ts.month     # 3, 6, 9, or 12
-        m_rem      = 12 - m            # months remaining in year after meeting
 
         prev_dgs2_idx = dgs2.index[dgs2.index < fomc_ts]   if dgs2   is not None else pd.DatetimeIndex([])
         prev_dgs1_idx = dgs1.index[dgs1.index < fomc_ts]   if dgs1   is not None else pd.DatetimeIndex([])
@@ -204,13 +254,25 @@ for fomc_str in ALL_FOMC:
         dgs2_prev = dgs2[prev_dgs2_idx[-1]]   if len(prev_dgs2_idx) > 0 else np.nan
         dgs1_prev = dgs1[prev_dgs1_idx[-1]]   if len(prev_dgs1_idx) > 0 else np.nan
 
-        # Implied rates (expectations hypothesis)
-        r_1Y = (m_rem * (r_0 + sep_median) / 2 + m * sep_median) / 12
-        r_2Y = (m_rem * (r_0 + sep_median) / 2 + (12 + m) * sep_median) / 24
+        # ACM-adjusted 2Y (risk-neutral): dots = pure expectations, so strip term premium
+        dgs2_rn_prev = dgs2_rn[prev_dgs2_idx[-1]] if (dgs2_rn is not None and len(prev_dgs2_idx) > 0) else np.nan
+
+        # Multi-year implied rates (expectations hypothesis)
+        if m == 12:
+            # December: Phase 1 = 12-month ramp r0→r_YE1; Phase 2 = 12-month ramp r_YE1→r_YE2
+            r_1Y = (r_0 + r_YE1) / 2
+            r_2Y = (r_0 + 2 * r_YE1 + r_YE2) / 4
+        else:
+            # Non-December: Phase 1 (m_rem months r0→r_YE1), Phase 2 (12 months r_YE1→r_YE2),
+            #               Phase 3 (m months flat at r_YE2). Total = m_rem+12+m = 24 months.
+            m_rem = 12 - m
+            phase2_avg_1Y = r_YE1 + (r_YE2 - r_YE1) * m / 24   # avg over first m months of ramp
+            r_1Y = (m_rem * (r_0 + r_YE1) / 2 + m * phase2_avg_1Y) / 12
+            r_2Y = (m_rem * (r_0 + r_YE1) / 2 + 12 * (r_YE1 + r_YE2) / 2 + m * r_YE2) / 24
 
         # Guidance gaps in bps
-        gap_1Y = (r_1Y - dgs1_prev) * 100 if not np.isnan(dgs1_prev) else np.nan
-        gap_2Y = (r_2Y - dgs2_prev) * 100 if not np.isnan(dgs2_prev) else np.nan
+        gap_1Y = (r_1Y - dgs1_prev)   * 100 if not np.isnan(dgs1_prev)   else np.nan
+        gap_2Y = (r_2Y - dgs2_rn_prev) * 100 if not np.isnan(dgs2_rn_prev) else np.nan
 
         # Rolling vol (floored), using prior-day value for real-time discipline
         def floored_std(roll_std_s, idx):
@@ -218,8 +280,8 @@ for fomc_str in ALL_FOMC:
             v = roll_std_s.get(idx[-1], np.nan)
             return max(v, SEP_FLOOR_STD) if not np.isnan(v) else SEP_FLOOR_STD
 
-        vol_1Y = floored_std(roll_std_dgs1, prev_dgs1_idx)
-        vol_2Y = floored_std(roll_std_dgs2, prev_dgs2_idx)
+        vol_1Y = floored_std(roll_std_dgs1,    prev_dgs1_idx)
+        vol_2Y = floored_std(roll_std_dgs2_rn, prev_dgs2_idx)  # vol of risk-neutral 2Y
 
         z_1Y = gap_1Y / vol_1Y if not np.isnan(gap_1Y) else np.nan
         z_2Y = gap_2Y / vol_2Y if not np.isnan(gap_2Y) else np.nan
@@ -227,23 +289,25 @@ for fomc_str in ALL_FOMC:
         fomc_dgs2 = dgs2.get(fomc_ts, np.nan) if dgs2 is not None else np.nan  # informational
 
         rec.update({
-            'sep_median':   round(sep_median, 3),
-            'effr_prev':    round(r_0, 3),
-            'dgs1_prev':    round(dgs1_prev, 3)  if not np.isnan(dgs1_prev) else np.nan,
-            'dgs2_prev':    round(dgs2_prev, 3)  if not np.isnan(dgs2_prev) else np.nan,
-            'dgs2_fomc':    round(fomc_dgs2, 3)  if not np.isnan(fomc_dgs2) else np.nan,
-            'r_1Y_impl':    round(r_1Y, 3),
-            'r_2Y_impl':    round(r_2Y, 3),
-            'gap_1Y_bps':   round(gap_1Y, 1)     if not np.isnan(gap_1Y) else np.nan,
-            'gap_2Y_bps':   round(gap_2Y, 1)     if not np.isnan(gap_2Y) else np.nan,
-            'vol_1Y_bps':   round(vol_1Y, 2),
-            'vol_2Y_bps':   round(vol_2Y, 2),
-            'z_1Y':         round(z_1Y, 2)        if not np.isnan(z_1Y) else np.nan,
-            'z_2Y':         round(z_2Y, 2)        if not np.isnan(z_2Y) else np.nan,
+            'sep_median':    round(r_YE1, 3),
+            'r_YE2':         round(r_YE2, 3),
+            'effr_prev':     round(r_0, 3),
+            'dgs1_prev':     round(dgs1_prev, 3)    if not np.isnan(dgs1_prev)    else np.nan,
+            'dgs2_prev':     round(dgs2_prev, 3)    if not np.isnan(dgs2_prev)    else np.nan,
+            'dgs2_rn_prev':  round(dgs2_rn_prev, 3) if not np.isnan(dgs2_rn_prev) else np.nan,
+            'dgs2_fomc':     round(fomc_dgs2, 3)    if not np.isnan(fomc_dgs2)    else np.nan,
+            'r_1Y_impl':     round(r_1Y, 3),
+            'r_2Y_impl':     round(r_2Y, 3),
+            'gap_1Y_bps':    round(gap_1Y, 1)       if not np.isnan(gap_1Y)       else np.nan,
+            'gap_2Y_bps':    round(gap_2Y, 1)       if not np.isnan(gap_2Y)       else np.nan,
+            'vol_1Y_bps':    round(vol_1Y, 2),
+            'vol_2Y_bps':    round(vol_2Y, 2),
+            'z_1Y':          round(z_1Y, 2)          if not np.isnan(z_1Y)        else np.nan,
+            'z_2Y':          round(z_2Y, 2)          if not np.isnan(z_2Y)        else np.nan,
             # primary z_score for backward compat — use z_1Y (user preference)
-            'surprise_bps': round(gap_1Y, 1)     if not np.isnan(gap_1Y) else np.nan,
-            'roll_std_bps': round(vol_1Y, 2),
-            'z_score':      round(z_1Y, 2)        if not np.isnan(z_1Y) else np.nan,
+            'surprise_bps':  round(gap_1Y, 1)       if not np.isnan(gap_1Y)       else np.nan,
+            'roll_std_bps':  round(vol_1Y, 2),
+            'z_score':       round(z_1Y, 2)          if not np.isnan(z_1Y)        else np.nan,
         })
     else:
         # Non-SEP track: target surprise = actual_move - implied_move
@@ -299,7 +363,7 @@ df['date'] = pd.to_datetime(df['date'])
 
 # Ensure all expected columns exist
 for c in ['net_pnl','gross_pnl','tc','ret_14',
-          'sep_median','effr_prev','dgs1_prev','dgs2_prev','dgs2_fomc',
+          'sep_median','r_YE2','effr_prev','dgs1_prev','dgs2_prev','dgs2_rn_prev','dgs2_fomc',
           'r_1Y_impl','r_2Y_impl','gap_1Y_bps','gap_2Y_bps',
           'vol_1Y_bps','vol_2Y_bps','z_1Y','z_2Y',
           'dgs1mo_prev','implied_move_bps','actual_move_bps',
@@ -337,21 +401,21 @@ df.loc[df['surprise_type'] == 'target', ['signal_1Y', 'signal_2Y']] = 'small'  #
 
 # ── 4. Print full event table ─────────────────────────────────────────────────
 SEP_df = df[df['surprise_type'] == 'SEP']
-print('\n' + '='*130)
-print(f'{"Date":<12} {"Regime":<14} {"EFFR":>6} {"r_YE":>6} {"r1Y":>6} {"r2Y":>6} '
-      f'{"DGS1":>6} {"DGS2":>6} {"gap1Y":>7} {"gap2Y":>7} '
-      f'{"z_1Y":>7} {"z_2Y":>7} {"sig1Y":<7} {"sig2Y":<7} {"Net PnL":>9}')
-print('-'*130)
+print('\n' + '='*145)
+print(f'{"Date":<12} {"Regime":<14} {"EFFR":>6} {"r_YE1":>6} {"r_YE2":>6} {"r1Y":>6} {"r2Y":>6} '
+      f'{"ACMRN":>6} {"gap2Y":>7} {"vol2Y":>6} '
+      f'{"z_2Y":>7} {"sig2Y":<8} {"Net PnL":>9}')
+print('-'*145)
 for _, r in SEP_df.iterrows():
     def fmt(v, fmt_str='+.1f'): return f'{v:{fmt_str}}' if not pd.isna(v) else '  N/A'
     pnl_str = f'${r["net_pnl"]:+,.0f}' if not pd.isna(r.get('net_pnl', np.nan)) else '    N/A'
     print(f'{str(r["date"].date()):<12} {r["regime"]:<14} '
           f'{fmt(r.get("effr_prev"), ".3f"):>6} {fmt(r.get("sep_median"), ".3f"):>6} '
+          f'{fmt(r.get("r_YE2"), ".3f"):>6} '
           f'{fmt(r.get("r_1Y_impl"), ".3f"):>6} {fmt(r.get("r_2Y_impl"), ".3f"):>6} '
-          f'{fmt(r.get("dgs1_prev"), ".3f"):>6} {fmt(r.get("dgs2_prev"), ".3f"):>6} '
-          f'{fmt(r.get("gap_1Y_bps")):>7} {fmt(r.get("gap_2Y_bps")):>7} '
-          f'{fmt(r.get("z_1Y"), "+.2f"):>7} {fmt(r.get("z_2Y"), "+.2f"):>7} '
-          f'{str(r.get("signal_1Y","?")):7} {str(r.get("signal_2Y","?")):7} {pnl_str:>9}')
+          f'{fmt(r.get("dgs2_rn_prev"), ".3f"):>6} '
+          f'{fmt(r.get("gap_2Y_bps")):>7} {fmt(r.get("vol_2Y_bps"), ".1f"):>6} '
+          f'{fmt(r.get("z_2Y"), "+.2f"):>7} {str(r.get("signal_2Y","?")):8} {pnl_str:>9}')
 
 print('\nNon-SEP events (always traded):')
 non_sep_df = df[df['surprise_type'] == 'target']
@@ -485,8 +549,8 @@ print('\nFigure saved: FOMC/figures/fomc_ois_surprise.png')
 
 # ── Save CSV ──────────────────────────────────────────────────────────────────
 col_order = ['date','year','regime','surprise_type',
-             'effr_prev','sep_median',
-             'dgs1_prev','dgs2_prev','dgs2_fomc',
+             'effr_prev','sep_median','r_YE2',
+             'dgs1_prev','dgs2_prev','dgs2_rn_prev','dgs2_fomc',
              'r_1Y_impl','r_2Y_impl',
              'gap_1Y_bps','vol_1Y_bps','z_1Y','signal_1Y',
              'gap_2Y_bps','vol_2Y_bps','z_2Y','signal_2Y',

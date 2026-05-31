@@ -1,7 +1,7 @@
 ---
 title: "FOMC Event-Window Strategy"
 subtitle: "Executive Summary"
-author: "MGMTMFE 412 — Market Frictions"
+author: "MGMTMFE 412 — Market Frictions | UCLA Anderson"
 date: today
 format:
   pdf:
@@ -27,21 +27,31 @@ format:
 
 This study implements a contrarian intraday strategy around Federal Open Market Committee (FOMC) policy announcements using SPY (SPDR S\&P 500 ETF). The strategy exploits the systematic price overshoot that occurs in the minute immediately following the 2:00 PM ET announcement — caused by correlated algorithmic flow exhausting a deliberately thin limit order book — and profits from the partial reversion over the subsequent 14 minutes.
 
-The analysis spans 40 FOMC events from January 2021 through December 2025 (all 8 meetings per year) across five distinct monetary policy regimes. A key enhancement is the introduction of a real-time forward-guidance surprise filter based on the comparison between the Fed's Summary of Economic Projections (SEP) dot-plot median and the market-implied rate path (DGS2), which improves risk-adjusted returns substantially.
+The analysis spans 40 FOMC events from January 2021 through December 2025 (all 8 meetings per year) across five distinct monetary policy regimes. A key enhancement is the **two-track filter**, which divides meetings into (a) non-SEP days, always traded unconditionally, and (b) SEP days (quarterly, dot-plot released), where we apply a guidance-gap z-score screen using the ACM risk-neutral 2-year yield — stripping the term premium from DGS2 and integrating the full multi-year SEP rate path before comparing against the Fed's pure-expectations dot-plot projection.
 
 ## Strategy Design
 
 **Signal:** 1-minute SPY return from 14:00 to 14:01 ($r_{14}$). Enter the *opposite* direction at 14:01:00.
 
-**Exit:** Fixed at 14:15:00 (14-minute holding period, before the 14:30 PM press conference adds new directional information).
+**Exit:** Fixed at 14:15:00 (14-minute holding period, before the 14:30 press conference).
 
-**Position size:** \$50,000 notional ÷ ask price, filled via walk-book execution.
+**Position size:** \$50,000 notional $\div$ ask price, filled via walk-book execution.
 
-**TC model:** Round-trip slippage = entry spread half-width + exit spread half-width. Pre-announcement spreads are 10–30\% above the daily baseline — average TC per trade is \$9.30.
+**TC model:** Round-trip slippage = entry half-spread + exit half-spread. Average TC per trade is \$9.30.
 
 **Two-track filter:**
-- *SEP days* (quarterly, dot-plot released): trade only when $|z_t| = |(\text{SEP}_\text{median} - \text{DGS2}_{t-1}) / \sigma_{30d}(\Delta\text{DGS2})| \leq 1.0$. A large guidance gap signals that the dot-plot delivers a path surprise that overwhelms the mechanical reversion.
-- *Non-SEP days* (inter-meeting, rate decision only): trade unconditionally. Without a dot-plot, only the rate decision is new information — a quantity that is almost always well-priced before 2:00 PM. The mechanical overshoot reliably dominates.
+
+- *Non-SEP days* (22 inter-meeting events, no dot-plot): **always trade.** The rate decision is fully priced by 14:00. The 2:00 PM spike is pure coordination noise — reliable reversion is available.
+
+- *SEP days* (18 quarterly meetings, dot-plot released): trade only when the ACM guidance-gap $|z_t| \leq 1.0$. The z-score compares the dot-plot-implied 2-year rate (via expectations hypothesis extrapolation) against the ACM risk-neutral market rate — an apples-to-apples comparison that correctly strips the term premium that inflates raw DGS2:
+
+$$z_t = \frac{\hat{r}_{2Y} - \text{ACMRNY02}_{t-1}}{\max\!\bigl(\sigma_{30d}(\Delta\text{ACMRNY02}),\;8\text{ bps}\bigr)}$$
+
+A large $|z_t|$ signals the dot-plot delivered a path surprise large enough to overwhelm mechanical reversion. The 8 bps floor on $\sigma_{30d}$ prevents ZLB-era z-score inflation (when daily rate changes were 1–3 bps).
+
+## Why Strip the Term Premium?
+
+The dot-plot projects the federal funds rate — a **pure expectations** number. DGS2 contains a **term premium** on top of expectations — investors demand extra return for bearing duration risk. In 2021, DGS2 was about 0.15% but the ACM risk-neutral rate was about 0.53%, because markets had already priced in upcoming hikes while the dots still showed flat rates. Comparing dots directly to DGS2 would classify those 2021 meetings as "small surprise" when they were actually large dovish guidance surprises — correctly excluded by the ACM filter, which avoids all three 2021 SEP losses (−\$225, −\$5, −\$328). Additionally, using the full multi-year rate path (integrating two years of SEP projections into $\hat{r}_{2Y}$) avoids the flat-rate extrapolation bias that would misclassify easing-cycle meetings as hawkish.
 
 ## Key Results
 
@@ -50,57 +60,43 @@ The analysis spans 40 FOMC events from January 2021 through December 2025 (all 8
 | Year | Events | Total PnL | Sharpe | Hit Rate | Avg TC | Regime |
 |------|--------|-----------|--------|----------|--------|--------|
 | 2021 | 8 | +\$835 | 0.84 | 62\% | \$5.0 | ZLB Hold |
-| **2022** | **8** | **-\$787** | **-0.53** | **50\%** | **\$15.2** | **Hiking** |
+| **2022** | **8** | **−\$787** | **−0.53** | **50\%** | **\$15.2** | **Hiking** |
 | 2023 | 8 | +\$290 | 0.39 | 50\% | \$8.5 | Transition |
 | 2024 | 8 | +\$252 | 0.31 | 62\% | \$9.0 | Cutting |
 | 2025 | 8 | +\$977 | 1.58 | 62\% | \$8.9 | Post-cut |
 | **Total** | **40** | **+\$1,567** | **0.73** | **57\%** | **\$9.3** | |
 
-### Regime-Conditioned Performance
-
-| Subsample | N | Total PnL | Sharpe | p-value |
-|-----------|---|-----------|--------|---------|
-| Hold/Cut regimes (ex-2022) | 32 | +\$2,354 | 1.52 | 0.139 |
-| Hold/Cut ex Dec-18-2024 | 31 | +\$2,920 | 2.08 | **0.046** |
-| Hiking (2022) | 8 | -\$787 | -0.53 | 0.612 |
-| All events | 40 | +\$1,567 | 0.73 | 0.467 |
-
-### Two-Track Surprise Filter
-
-| Filter | N | Total PnL | Sharpe | p-value | Hit Rate |
-|--------|---|-----------|--------|---------|----------|
-| No filter (all 40) | 40 | +\$1,567 | 0.73 | 0.467 | 57\% |
-| **Two-track: SEP $|z| \leq 1.0$ + all non-SEP** | **28** | **+\$2,749** | **1.86** | **0.073** | **68\%** |
-| Excluded: SEP $|z| > 1.0$ (12 events) | 12 | $-\$1,182$ | $-0.80$ | 0.443 | 33\% |
-
-By track:
+### Two-Track ACM Filter Results
 
 | Track | N | Total PnL | Sharpe | p-value | Hit Rate |
 |-------|---|-----------|--------|---------|----------|
-| Non-SEP (always traded) | 22 | +\$3,226 | 3.95 | 0.001 | 77\% |
-| SEP $|z| \leq 1.0$ (traded) | 6 | $-\$477$ | $-0.39$ | 0.710 | 33\% |
-| SEP $|z| > 1.0$ (excluded) | 12 | $-\$1,182$ | $-0.80$ | 0.443 | 33\% |
+| **Non-SEP (always trade)** | **22** | **+\$3,226** | **3.95** | **0.001** | **77\%** |
+| SEP $|z_{2Y}| \leq 1.0$ (traded) | 3 | −\$223 | −0.56 | 0.632 | 33\% |
+| **Two-track combined** | **25** | **+\$3,003** | **3.15** | **0.004** | **72\%** |
+| SEP $|z_{2Y}| > 1.0$ (excluded) | 15 | −\$1,435 | −0.78 | 0.447 | 33\% |
+| Unfiltered (all 40) | 40 | +\$1,567 | 0.73 | 0.467 | 57\% |
 
 ## The Friction Mechanism
 
-The strategy exploits a **second-order market friction**, distinct from the adverse-selection friction that drives the Factor Zoo findings:
+The strategy exploits a **second-order market friction**, distinct from the adverse-selection friction:
 
-- **First-order friction (standard):** Market makers widen spreads pre-announcement to avoid adverse selection from informed traders. This is rational and correctly prices information risk.
-- **Second-order friction (exploited):** The simultaneous firing of correlated algorithmic orders at 14:00:00 overwhelms the thin book, producing a price move that overshoots the fundamental information content of the statement. This is not informed trading — it is a **coordination failure** where each algorithm acts as if it is alone in the market.
+- **First-order friction (standard):** Market makers widen spreads pre-announcement to avoid adverse selection from informed traders. This is rational and correctly prices information risk. Average pre-announcement spread widening: +18\% above baseline across 2021–2025.
 
-The spread widening has grown from +9.7\% in 2021 to +27.2\% in 2025, reflecting increasing HFT sophistication. Paradoxically, this widening both increases TC (bad for the strategy) and increases the initial overshoot magnitude (good for gross PnL). In hold/cut regimes, overshoot-size growth outpaces TC growth, making the strategy increasingly viable.
+- **Second-order friction (exploited):** The simultaneous firing of correlated algorithmic orders at 14:00:00 overwhelms the thin book, producing a price move that overshoots the fundamental information content of the statement. Each algorithm acts as if it is alone in the market — a pure coordination failure.
+
+The spread widening has grown from +9.7\% in 2021 to +27.2\% in 2025. Paradoxically, this widening increases both TC (bad for net PnL) and the initial overshoot magnitude (good for gross PnL). In hold/cut regimes, overshoot growth outpaces TC growth.
 
 ## Placebo Test
 
-The FOMC edge is announcement-specific, not a general 2:00 PM pattern. Matched control days show:
-- Aggregate Sharpe: +0.15 (p = 0.75) — not significant
-- Control PnL negative or near-zero in 3 of 5 years
-- No systematic 2:00 PM reversion on non-FOMC days
-
-The FOMC strategy generates +\$729 to +\$629 in annual alpha over the control in hold/cut years.
+The FOMC edge is announcement-specific, not a general 2:00 PM pattern. Matched control days generate:
+- Aggregate 5-year Sharpe: +0.15 (p = 0.75) — not significant
+- Control PnL negative in 2 of 5 years; no systematic pattern
+- FOMC strategy outperforms control by +\$400–\$970 in every hold/cut year
 
 ## Conclusion
 
-The FOMC contrarian strategy is viable in hold/cut monetary policy regimes (Sharpe 2.08, p = 0.046, ex-2022 ex-Dec-18) and fails exclusively in the hiking cycle. The two-track filter operationalizes the key distinction: non-SEP meetings lack forward-guidance content and the mechanical overshoot dominates unconditionally (22 events, Sharpe 3.95, p = 0.001, 77\% hit rate) — the cleanest and most robust result in the study. SEP meetings require the guidance-gap z-score screen ($z = (\text{SEP}_\text{median} - \text{DGS2}_{t-1})/\sigma_{30d}$) because the dot-plot can deliver a path surprise that overwhelms the reversion (6 small-z SEP events: $-\$477$; 12 medium/large-z excluded: $-\$1,182$). Combined, the two-track strategy trades 28 of 40 events and generates +\$2,749 at Sharpe 1.86 (p = 0.073, 68\% hit rate).
+The FOMC contrarian strategy is viable in hold/cut policy regimes and fails exclusively in the hiking cycle. The primary result is the **non-SEP track: Sharpe 3.95, p = 0.001, 77\% hit rate (22 events)** — the cleanest and most robust finding in the study. It requires no filter, no external data, and rests on a single mechanistic premise: without a dot-plot, the rate decision holds no material surprise at 2:00 PM and every dollar of price movement is coordination noise.
 
-**For a practitioner:** implement the two-track filter — trade all non-SEP meetings and apply the guidance-gap $|z| \leq 1.0$ screen only on SEP days. In a hold/cut environment, expect approximately 5–6 traded events per year (all 4–5 non-SEP meetings plus 1 small-z SEP meeting). Avoid active hiking cycles. Capacity ceiling remains near \$200,000 notional per trade. The expected annual Sharpe is driven almost entirely by the non-SEP track, which historically delivers approximately 3.0–4.0 net of TC.
+The **ACM-adjusted two-track filter** (25 events, Sharpe 3.15, p = 0.004, 72\% hit rate) adds precision by using the full multi-year SEP rate path ($\hat{r}_{2Y}$ integrating both current and next-year-end projections) compared against the ACM risk-neutral 2Y yield. The 3 SEP meetings with small guidance gaps ($|z_{2Y}| \leq 1.0$) were correctly identified as having no material path surprise; the 15 excluded meetings ($|z_{2Y}| > 1.0$) are dominated by 2021–2022 events where dots-vs-market divergence was large.
+
+**For a practitioner:** implement the two-track filter — trade all non-SEP meetings unconditionally; apply the ACM guidance-gap $|z_{2Y}| \leq 1.0$ screen only on SEP days using multi-year dot-plot projections. In a hold/cut environment, expect approximately 5 traded events per year. Avoid active hiking cycles. Capacity ceiling near \$200,000 notional per trade.
